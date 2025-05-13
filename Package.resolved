@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/VergeGroup/Normalization",
       "state" : {
-        "revision" : "6e7cb1ddeda4d0f1d2fbf8ca6d25ecd8ed6ba917",
-        "version" : "1.1.0"
+        "revision" : "6b5ebbe680da5359ae2a3fc3e53a144069bd6845",
+        "version" : "1.2.0"
       }
     },
     {
@@ -14,8 +14,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/FluidGroup/PrecisionLevelSlider",
       "state" : {
-        "revision" : "3e460c1cea5ec916f7185948bc0a4e093e20f7a5",
-        "version" : "2.1.0"
+        "revision" : "d16becc518758b6f984ff07f8e8c6a0fa9245492",
+        "version" : "2.2.0"
       }
     },
     {
@@ -77,8 +77,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/FluidGroup/swiftui-Hosting",
       "state" : {
-        "revision" : "7e8eaca72eae910d6d3b6272c263c6c3a10b755c",
-        "version" : "1.2.0"
+        "revision" : "975f2565cff7625f610c36cd7c146d8ab104a1dc",
+        "version" : "2.3.0"
       }
     },
     {
@@ -113,8 +113,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/VergeGroup/Verge.git",
       "state" : {
-        "revision" : "331d2ae4493c7aae0e5333c0d93d6173cced9325",
-        "version" : "14.0.0-beta.7"
+        "revision" : "3f5ce18abd0321a0cf8d8a28a8b93ddf77c933ad",
+        "version" : "14.0.0"
       }
     }
   ],

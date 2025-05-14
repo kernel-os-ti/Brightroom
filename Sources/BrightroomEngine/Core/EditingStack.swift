@@ -1,3 +1,5 @@
+// (REMOVED misplaced setEdit async declaration; implementation goes inside class below)
+import Combine
 //
 // Copyright (c) 2018 Muukii <muukii.app@gmail.com>
 //
@@ -26,7 +28,7 @@ import UIKit
 import Verge
 
 public enum EditingStackError: Error {
-  case unableToCreateRendererInLoading
+    case unableToCreateRendererInLoading
 }
 
 /// A stateful object that manages current editing status from original image.
@@ -34,609 +36,609 @@ public enum EditingStackError: Error {
 ///
 /// - Attension: Source text
 /// Please make sure of EditingStack is started state before editing in UI with calling `start()`.
-open class EditingStack: Hashable, StoreDriverType {
+@MainActor
+open class EditingStack: ObservableObject,  Hashable, StoreDriverType {
 
-  private static let centralQueue = DispatchQueue.init(
-    label: "app.muukii.Brightroom.EditingStack.central",
-    qos: .default,
-    attributes: .concurrent
-  )
+    /// The preview image, updated via refresh helpers, and suitable for @Published/SwiftUI/Combine observation.
+    @Published public private(set) var editingPreviewImage: CIImage? = nil
+    public var editingPreviewImagePublisher: Published<CIImage?>.Publisher { $editingPreviewImage }
 
-  private let backgroundQueue = DispatchQueue.init(
-    label: "app.muukii.Brightroom.EditingStack",
-    qos: .default,
-    target: centralQueue
-  )
-
-  public struct Options {
-
-    public var usesMTLTextureForEditingImage: Bool = true
-
-    public init() {}
-  }
-
-  public static func == (lhs: EditingStack, rhs: EditingStack) -> Bool {
-    lhs === rhs
-  }
-
-  public func hash(into hasher: inout Hasher) {
-    ObjectIdentifier(self).hash(into: &hasher)
-  }
-
-  /**
-   A representation of state in EditingStack
-   */
-  public struct State: Equatable {
-    public struct Loading: Equatable {}
-
-    public struct Loaded: Equatable {
-
-      // MARK: - Properties
-
-      fileprivate let imageSource: ImageSource
-
-      public let metadata: ImageProvider.State.ImageMetadata
-
-      private let initialEditing: Edit
-
-      /**
-
-       - TODO: Should be marked as `fileprivate(set)`, but compile fails in CocoaPods installed.
-       */
-      public var currentEdit: Edit
-
-      /// Won't change from initial state
-      public var imageSize: CGSize {
-        initialEditing.imageSize
-      }
-
-      /**
-       A stack of editing history
-       */
-      public fileprivate(set) var history: [Edit] = []
-
-      public fileprivate(set) var thumbnailImage: CIImage
-
-      public let editingSourceCGImage: CGImage
-      /**
-       An original image
-       Can be used in cropping
-       */
-      public let editingSourceImage: CIImage
-
-      public fileprivate(set) var editingPreviewImage: CIImage
-
-      /// Call this after updating currentEdit to refresh the preview using async filtering.
-      public mutating func refreshEditingPreviewImage() async {
-        let result = await currentEdit.filters.apply(to: editingSourceImage)
-        // Because the struct may be used from the main actor/UI, update directly
-        editingPreviewImage = result
-      }
-
-      public fileprivate(set) var imageForCrop: CGImage
-
-      public fileprivate(set) var previewFilterPresets: [PreviewFilterPreset] = []
-
-      public var canUndo: Bool {
-        return history.count > 0
-      }
-
-      /**
-       A boolean value that indicates if EditingStack has updates against the original image.
-       */
-      public var isDirty: Bool {
-        return currentEdit != initialEditing
-      }
-
-      public var hasUncommitedChanges: Bool {
-        guard currentEdit == initialEditing else {
-          return true
-        }
-
-        guard let latestHistory = history.last else {
-          return false
-        }
-
-        guard latestHistory == currentEdit else {
-          return true
-        }
-
-        return false
-      }
-
-      // MARK: - Initializers
-
-      init(
-        imageSource: ImageSource,
-        metadata: ImageProvider.State.ImageMetadata,
-        initialEditing: EditingStack.Edit,
-        currentEdit: EditingStack.Edit,
-        history: [EditingStack.Edit] = [],
-        thumbnailCIImage: CIImage,
-        editingSourceCGImage: CGImage,
-        editingSourceCIImage: CIImage,
-        editingPreviewCIImage: CIImage,
-        imageForCrop: CGImage,
-        previewFilterPresets: [PreviewFilterPreset] = []
-      ) {
-        self.imageSource = imageSource
-        self.metadata = metadata
-        self.initialEditing = initialEditing
-        self.currentEdit = currentEdit
-        self.history = history
-        self.thumbnailImage = thumbnailCIImage
-        self.editingSourceCGImage = editingSourceCGImage
-        self.editingSourceImage = editingSourceCIImage
-        self.editingPreviewImage = editingPreviewCIImage
-        self.previewFilterPresets = previewFilterPresets
-        self.imageForCrop = imageForCrop
-      }
-
-      // MARK: - Functions
-
-      mutating func makeVersion() {
-        history.append(currentEdit)
-      }
-
-      mutating func revertCurrentEditing() {
-        currentEdit = history.last ?? initialEditing
-      }
-
-      mutating func revert(to revision: Revision) {
-        history.removeSubrange(revision..<history.count)
-        currentEdit = history.last ?? initialEditing
-      }
-
-      mutating func undoEditing() {
-        currentEdit = history.popLast() ?? initialEditing
-      }
-
+    /// Refresh the preview image after you modify filters/edits, with filtering done asynchronously.
+    public func refreshEditingPreviewImage() async {
+        guard let loaded = store.state.loadedState else { return }
+        let result = await loaded.currentEdit.filters.apply(to: loaded.editingSourceImage)
+        await MainActor.run { self.editingPreviewImage = result }
     }
-
-    public fileprivate(set) var hasStartedEditing = false
-    /**
-     A Boolean value that indicates whether the image is currently loading for editing.
-     */
-    public var isLoading: Bool {
-      loadedState == nil
-    }
-
-    public fileprivate(set) var loadingState: Loading = .init()
-    public fileprivate(set) var loadedState: Loaded?
-
-    init() {}
-  }
-
-  // MARK: - Stored Properties
-
-  public let store: Store<State, Never>
-
-  public let options: Options
-
-  private let mtlDevice = MTLCreateSystemDefaultDevice()
-
-  public let imageProvider: ImageProvider
-
-  private let filterPresets: [FilterPreset]
-
-  private var subscriptions = Set<AnyCancellable>()
-  private var imageProviderSubscription: (any Cancellable)?
-
-  public var cropModifier: CropModifier
-
-  private let editingImageMaxPixelSize: CGFloat = 2560
-
-  private let debounceForCreatingCGImage = _BrightroomDebounce(
-    interval: 0.1,
-    queue: DispatchQueue.init(label: "Brightroom.cgImage")
-  )
-
-  // MARK: - Initializers
-
-  /// Creates an instance
-  /// - Parameters:
-  ///   - source:
-  ///   - previewSize:
-  ///   - colorCubeStorage:
-  ///   - modifyCrop: A chance to modify cropping. It runs in background-thread. CIImage is not original image.
-  public init(
-    imageProvider: ImageProvider,
-    colorCubeStorage: PresetStorage = .default,
-    presetStorage: PresetStorage = .default,
-    options: Options = .init(),
-    cropModifier: CropModifier = .init(modify: { _, c, completion in completion(c) })
-  ) {
-    self.options = options
-    self.cropModifier = cropModifier
-    store = .init(
-      initialState: .init()
+    
+    private static let centralQueue = DispatchQueue.init(
+        label: "app.muukii.Brightroom.EditingStack.central",
+        qos: .default,
+        attributes: .concurrent
     )
-    filterPresets =
-      colorCubeStorage.presets.map {
-        FilterPreset(
-          name: $0.name,
-          identifier: $0.identifier,
-          filters: [$0.asAny()],
-          userInfo: [:]
-        )
-      } + presetStorage.presets
-
-    self.imageProvider = imageProvider
-  }
-
-  /**
-   EditingStack awakes from cold state.
-
-   - Calling from background-thread supported.
-   */
-  public func start(onPreparationCompleted: @escaping @MainActor () -> Void = {}) {
-
-    let previousHasCompleted = commit { s -> Bool in
-      /**
-       Mutual exclusion
-       */
-      if s.hasStartedEditing {
-        return true
-      } else {
-        s.hasStartedEditing = true
-        return false
-      }
+    
+    private let backgroundQueue = DispatchQueue.init(
+        label: "app.muukii.Brightroom.EditingStack",
+        qos: .default,
+        target: centralQueue
+    )
+    
+    public struct Options {
+        
+        public var usesMTLTextureForEditingImage: Bool = true
+        
+        public init() {}
     }
-
-    guard previousHasCompleted == false else {
-      DispatchQueue.main.async {
-        onPreparationCompleted()
-      }
-      return
+    
+    public nonisolated static func == (lhs: EditingStack, rhs: EditingStack) -> Bool {
+        lhs === rhs
     }
-
-    store.sinkState(queue: .specific(backgroundQueue)) { [weak self] (state: Changes<State>) in
-      guard let self = self else { return }
-      Task { await self.receiveInBackground(newState: state) }
+    public nonisolated func hash(into hasher: inout Hasher) {
+        ObjectIdentifier(self).hash(into: &hasher)
     }
-    .store(in: &subscriptions)
-
+    
     /**
-     Start downloading image
+     A representation of state in EditingStack
      */
-
-    backgroundQueue.async {
-      self.imageProvider.start()
-    }
-
-    imageProviderSubscription = imageProvider
-      .sinkState(queue: .specific(backgroundQueue)) { [weak self] (state: Changes<ImageProvider.State>) in
-        /* In Background thread */
-        guard let self = self else { return }
-        state.ifChanged(\.loadedImage).do { image in
-          guard let image = image else { return }
-          switch image {
-            case let .editable(image, metadata):
-              let thumbnailCGImage = image.loadThumbnailCGImage(maxPixelSize: 180)
-              let editingSourceCGImage = image.loadThumbnailCGImage(
-                maxPixelSize: self.editingImageMaxPixelSize
-              )
-              assert(editingSourceCGImage.colorSpace != nil)
-              let _editingSourceCIImage: CIImage = editingSourceCGImage._makeCIImage(
-                orientation: metadata.orientation,
-                device: self.mtlDevice,
-                usesMTLTexture: self.options.usesMTLTextureForEditingImage
-              )
-              let _thumbnailImage: CIImage = thumbnailCGImage._makeCIImage(
-                orientation: metadata.orientation,
-                device: self.mtlDevice,
-                usesMTLTexture: self.options.usesMTLTextureForEditingImage
-              )
-              let cgImageForCrop: CGImage = editingSourceCGImage
-              self.adjustCropExtent(
-                image: _editingSourceCIImage,
-                imageSize: metadata.imageSize,
-                completion: { [weak self] crop in
-                  guard let self = self else { return }
-                  self.commit { (s: inout State) in
-                    assert(
-                      (_editingSourceCIImage.extent.width > _editingSourceCIImage.extent.height)
-                        == (metadata.imageSize.width > metadata.imageSize.height)
-                    )
-                    let initialEdit = Edit(crop: crop)
-                    s.loadedState = .init(
-                      imageSource: image,
-                      metadata: metadata,
-                      initialEditing: initialEdit,
-                      currentEdit: initialEdit,
-                      thumbnailCIImage: _thumbnailImage,
-                      editingSourceCGImage: editingSourceCGImage,
-                      editingSourceCIImage: _editingSourceCIImage,
-                      editingPreviewCIImage: _editingSourceCIImage,
-                      imageForCrop: cgImageForCrop
-                    )
-                    self.imageProviderSubscription?.cancel()
-                    DispatchQueue.main.async {
-                      onPreparationCompleted()
-                    }
-                  }
-                  // After state is initialized, do the real async crop render in background:
-                  Task {
-                      let cgImageForCrop: CGImage = await {
-                      do {
-                        return try await EditingStack.renderCGImageForCrop(
-                          filters: [],
-                          source: .init(cgImage: editingSourceCGImage),
-                          orientation: metadata.orientation
-                        )
-                      } catch {
-                        EngineSanitizer.global.onDidFindRuntimeError(
-                          .failedToRenderCGImageForCrop(sourceImage: editingSourceCGImage)
-                        )
-                        assertionFailure()
-                        return editingSourceCGImage
-                      }
-                    }()
-                    self.commit {
-                      $0.loadedState?.imageForCrop = cgImageForCrop
-                    }
-                  }
+    public struct State {
+        public struct Loading: Equatable {}
+        
+        public struct Loaded {
+            
+            // MARK: - Properties
+            
+            fileprivate let imageSource: ImageSource
+            
+            public let metadata: ImageProvider.State.ImageMetadata
+            
+            private let initialEditing: Edit
+            
+            /**
+             
+             - TODO: Should be marked as `fileprivate(set)`, but compile fails in CocoaPods installed.
+             */
+            public var currentEdit: Edit
+            
+            /// Won't change from initial state
+            public var imageSize: CGSize {
+                initialEditing.imageSize
+            }
+            
+            /**
+             A stack of editing history
+             */
+            public fileprivate(set) var history: [Edit] = []
+            
+            public fileprivate(set) var thumbnailImage: CIImage
+            
+            public let editingSourceCGImage: CGImage
+            /**
+             An original image
+             Can be used in cropping
+             */
+            public let editingSourceImage: CIImage
+            
+            /// The filtered preview image (owned and published by the EditingStack class).
+            public fileprivate(set) var imageForCrop: CGImage
+            
+            public fileprivate(set) var previewFilterPresets: [PreviewFilterPreset] = []
+            
+            public var canUndo: Bool {
+                return history.count > 0
+            }
+            
+            // All preview-image update and publishing logic is now in EditingStack (the class only, not here).
+            
+            // All preview-image update and publishing logic is now in EditingStack (the class only, not here).
+            /**
+             A boolean value that indicates if EditingStack has updates against the original image.
+             */
+            public var isDirty: Bool {
+                return currentEdit != initialEditing
+            }
+            
+            public var hasUncommitedChanges: Bool {
+                guard currentEdit == initialEditing else {
+                    return true
                 }
-              )
-          }
+                
+                guard let latestHistory = history.last else {
+                    return false
+                }
+                
+                guard latestHistory == currentEdit else {
+                    return true
+                }
+                
+                return false
+            }
+            
+            // MARK: - Initializers
+            
+            init(
+                imageSource: ImageSource,
+                metadata: ImageProvider.State.ImageMetadata,
+                initialEditing: EditingStack.Edit,
+                currentEdit: EditingStack.Edit,
+                history: [EditingStack.Edit] = [],
+                thumbnailCIImage: CIImage,
+                editingSourceCGImage: CGImage,
+                editingSourceCIImage: CIImage,
+                editingPreviewCIImage: CIImage,
+                imageForCrop: CGImage,
+                previewFilterPresets: [PreviewFilterPreset] = []
+            ) {
+                self.imageSource = imageSource
+                self.metadata = metadata
+                self.initialEditing = initialEditing
+                self.currentEdit = currentEdit
+                self.history = history
+                self.thumbnailImage = thumbnailCIImage
+                self.editingSourceCGImage = editingSourceCGImage
+                self.editingSourceImage = editingSourceCIImage
+                self.previewFilterPresets = previewFilterPresets
+                self.imageForCrop = imageForCrop
+            }
+            
+            // MARK: - Functions
+            
+            mutating func makeVersion() {
+                history.append(currentEdit)
+            }
+            
+            mutating func revertCurrentEditing() {
+                currentEdit = history.last ?? initialEditing
+            }
+            
+            mutating func revert(to revision: Revision) {
+                history.removeSubrange(revision..<history.count)
+                currentEdit = history.last ?? initialEditing
+            }
+            
+            mutating func undoEditing() {
+                currentEdit = history.popLast() ?? initialEditing
+            }
+            
         }
-      }
-  }
-
-  /**
-   Returns a CIImage applied cropping in current editing.
-
-   For previewing image
-   */
-  public func makeCroppedCIImage(
-    sourceImage: CGImage,
-    crop: EditingCrop,
-    orientation: CGImagePropertyOrientation
-  ) -> CIImage {
-
-    do {
-
-      // orientation-respected
-      let imageSize = sourceImage.size
-        .applying(cgOrientation: orientation)
-
-      let scaledCrop = crop.scaledWithPixelPerfect(
-        maxPixelSize: max(imageSize.width, imageSize.height)
-      )
-
-      return try sourceImage
-      // TODO: better to combine these operations - oriented and cropping
-        .oriented(orientation)
-        .croppedWithColorspace(
-          to: scaledCrop.cropExtent, adjustmentAngleRadians: scaledCrop.aggregatedRotation.radians
-        )
-        ._makeCIImage(
-          orientation: .up,
-          device: mtlDevice,
-          usesMTLTexture: options.usesMTLTextureForEditingImage
-        )
-    } catch {
-      return .init(color: .gray)
+        
+        public fileprivate(set) var hasStartedEditing = false
+        /**
+         A Boolean value that indicates whether the image is currently loading for editing.
+         */
+        public var isLoading: Bool {
+            loadedState == nil
+        }
+        
+        public fileprivate(set) var loadingState: Loading = .init()
+        public fileprivate(set) var loadedState: Loaded?
+        
+        init() {}
     }
-  }
-
-  deinit {
-    EngineLog.debug("[EditingStack] deinit")
-  }
-
+    
+    // MARK: - Stored Properties
+    
+    public let store: Store<State, Never>
+    
+    public let options: Options
+    
+    private let mtlDevice = MTLCreateSystemDefaultDevice()
+    
+    public let imageProvider: ImageProvider
+    
+    private let filterPresets: [FilterPreset]
+    
+    private var subscriptions = Set<AnyCancellable>()
+    private var imageProviderSubscription: (any Cancellable)?
+    
+    public var cropModifier: CropModifier
+    
+    private let editingImageMaxPixelSize: CGFloat = 2560
+    
+    private let debounceForCreatingCGImage = _BrightroomDebounce(
+        interval: 0.1,
+        queue: DispatchQueue.init(label: "Brightroom.cgImage")
+    )
+    
+    // MARK: - Initializers
+    
+    /// Creates an instance
+    /// - Parameters:
+    ///   - source:
+    ///   - previewSize:
+    ///   - colorCubeStorage:
+    ///   - modifyCrop: A chance to modify cropping. It runs in background-thread. CIImage is not original image.
+    public init(
+        imageProvider: ImageProvider,
+        colorCubeStorage: PresetStorage = .default,
+        presetStorage: PresetStorage = .default,
+        options: Options = .init(),
+        cropModifier: CropModifier = .init(modify: { _, c, completion in completion(c) })
+    ) {
+        self.options = options
+        self.cropModifier = cropModifier
+        store = .init(
+            initialState: .init()
+        )
+        filterPresets =
+        colorCubeStorage.presets.map {
+            FilterPreset(
+                name: $0.name,
+                identifier: $0.identifier,
+                filters: [$0.asAny()],
+                userInfo: [:]
+            )
+        } + presetStorage.presets
+        
+        self.imageProvider = imageProvider
+    }
+    
+    /**
+     EditingStack awakes from cold state.
+     
+     - Calling from background-thread supported.
+     */
+    public func start(onPreparationCompleted: @escaping @MainActor () -> Void = {}) {
+        
+        let previousHasCompleted = commit { s -> Bool in
+            /**
+             Mutual exclusion
+             */
+            if s.hasStartedEditing {
+                return true
+            } else {
+                s.hasStartedEditing = true
+                return false
+            }
+        }
+        
+        guard previousHasCompleted == false else {
+            DispatchQueue.main.async {
+                onPreparationCompleted()
+            }
+            return
+        }
+        
+        store.sinkState(queue: .specific(backgroundQueue)) { [weak self] (state: Changes<State>) in
+            guard let self = self else { return }
+            Task { await self.receiveInBackground(newState: state) }
+        }
+        .store(in: &subscriptions)
+        
+        /**
+         Start downloading image
+         */
+        
+        backgroundQueue.async {
+            Task { @MainActor in
+                self.imageProvider.start()
+            }
+        }
+        
+        imageProviderSubscription = imageProvider
+            .sinkState(queue: .specific(backgroundQueue)) { [weak self] (state: Changes<ImageProvider.State>) in
+                /* In Background thread */
+                guard let self = self else { return }
+                state.ifChanged(\.loadedImage).do { image in
+                    guard let image = image else { return }
+                    switch image {
+                    case let .editable(image, metadata):
+                        let thumbnailCGImage = image.loadThumbnailCGImage(maxPixelSize: 180)
+                        let editingSourceCGImage = image.loadThumbnailCGImage(
+                            maxPixelSize: self.editingImageMaxPixelSize
+                        )
+                        assert(editingSourceCGImage.colorSpace != nil)
+                        let _editingSourceCIImage: CIImage = editingSourceCGImage._makeCIImage(
+                            orientation: metadata.orientation,
+                            device: self.mtlDevice,
+                            usesMTLTexture: self.options.usesMTLTextureForEditingImage
+                        )
+                        let _thumbnailImage: CIImage = thumbnailCGImage._makeCIImage(
+                            orientation: metadata.orientation,
+                            device: self.mtlDevice,
+                            usesMTLTexture: self.options.usesMTLTextureForEditingImage
+                        )
+                        let cgImageForCrop: CGImage = editingSourceCGImage
+                        Task { @MainActor in
+                            self.adjustCropExtent(
+                                image: _editingSourceCIImage,
+                                imageSize: metadata.imageSize,
+                                completion: { [weak self] crop in
+                                    guard let self = self else { return }
+                                    self.commit { (s: inout State) in
+                                        assert(
+                                            (_editingSourceCIImage.extent.width > _editingSourceCIImage.extent.height)
+                                            == (metadata.imageSize.width > metadata.imageSize.height)
+                                        )
+                                        let initialEdit = Edit(crop: crop)
+                                        s.loadedState = .init(
+                                            imageSource: image,
+                                            metadata: metadata,
+                                            initialEditing: initialEdit,
+                                            currentEdit: initialEdit,
+                                            thumbnailCIImage: _thumbnailImage,
+                                            editingSourceCGImage: editingSourceCGImage,
+                                            editingSourceCIImage: _editingSourceCIImage,
+                                            editingPreviewCIImage: _editingSourceCIImage,
+                                            imageForCrop: cgImageForCrop
+                                        )
+                                        self.imageProviderSubscription?.cancel()
+                                        DispatchQueue.main.async {
+                                            onPreparationCompleted()
+                                        }
+                                    }
+                                    // After state is initialized, do the real async crop render in background:
+                                    Task {
+                                        let cgImageForCrop: CGImage = await {
+                                            do {
+                                                return try await EditingStack.renderCGImageForCrop(
+                                                    filters: [],
+                                                    source: .init(cgImage: editingSourceCGImage),
+                                                    orientation: metadata.orientation
+                                                )
+                                            } catch {
+                                                EngineSanitizer.global.onDidFindRuntimeError(
+                                                    .failedToRenderCGImageForCrop(sourceImage: editingSourceCGImage)
+                                                )
+                                                assertionFailure()
+                                                return editingSourceCGImage
+                                            }
+                                        }()
+                                        self.commit {
+                                            $0.loadedState?.imageForCrop = cgImageForCrop
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+    }
+    
+    /**
+     Returns a CIImage applied cropping in current editing.
+     
+     For previewing image
+     */
+    public func makeCroppedCIImage(
+        sourceImage: CGImage,
+        crop: EditingCrop,
+        orientation: CGImagePropertyOrientation
+    ) -> CIImage {
+        
+        do {
+            
+            // orientation-respected
+            let imageSize = sourceImage.size
+                .applying(cgOrientation: orientation)
+            
+            let scaledCrop = crop.scaledWithPixelPerfect(
+                maxPixelSize: max(imageSize.width, imageSize.height)
+            )
+            
+            return try sourceImage
+            // TODO: better to combine these operations - oriented and cropping
+                .oriented(orientation)
+                .croppedWithColorspace(
+                    to: scaledCrop.cropExtent, adjustmentAngleRadians: scaledCrop.aggregatedRotation.radians
+                )
+                ._makeCIImage(
+                    orientation: .up,
+                    device: mtlDevice,
+                    usesMTLTexture: options.usesMTLTextureForEditingImage
+                )
+        } catch {
+            return .init(color: .gray)
+        }
+    }
+    
+    deinit {
+        EngineLog.debug("[EditingStack] deinit")
+    }
+    
     private func receiveInBackground(newState state: Changes<State>) async {
-
-           assert(Thread.isMainThread == false)
-
-           if let loadedState = state.mapIfPresent(\.loadedState) {
-
-             loadedState.ifChanged(\.thumbnailImage).do { image in
-               Task { [self] in
-                 let previews = await withTaskGroup(of: PreviewFilterPreset.self) { group in
-                   for filter in self.filterPresets {
-                     group.addTask {
-                       await PreviewFilterPreset(sourceImage: image, filter: filter)
-                     }
-                   }
-                   return await group.reduce(into: [PreviewFilterPreset]()) { arr, preset in arr.append(preset) }
-                 }
-                 self.commit {
-                   $0.loadedState!.previewFilterPresets = previews
-                 }
-               }
-             }
-
-             loadedState.ifChanged(\.currentEdit.filters).do { currentEdit in
-
-               self.debounceForCreatingCGImage.on { [weak self] in
-                 guard let self = self else { return }
-                 Task {
-                     let cgImageForCrop: CGImage = await {
-                     do {
-                       return try await EditingStack.renderCGImageForCrop(
-                         filters: currentEdit.makeFilters(),
-                         source: .init(cgImage: loadedState.editingSourceCGImage),
-                         orientation: loadedState.metadata.orientation
-                       )
-                     } catch {
-                       assertionFailure()
-                       return loadedState.editingSourceCGImage
-                     }
-                   }()
-                   self.commit {
-                     $0.loadedState?.imageForCrop = cgImageForCrop
-                   }
-                 }
-               }
-             }
-           }
-       }
-
-  // MARK: - Functions
-
-  /**
-   Adds a new snapshot as a history.
-   */
-  public func takeSnapshot() {
-    commit {
-      $0.loadedState?.makeVersion()
+        
+        assert(Thread.isMainThread == false)
+        
+        if let loadedState = state.mapIfPresent(\.loadedState) {
+            
+            loadedState.ifChanged(\.thumbnailImage).do { image in
+                Task { [self] in
+                    let previews = await withTaskGroup(of: PreviewFilterPreset.self) { group in
+                        for filter in self.filterPresets {
+                            group.addTask {
+                                await PreviewFilterPreset(sourceImage: image, filter: filter)
+                            }
+                        }
+                        return await group.reduce(into: [PreviewFilterPreset]()) { arr, preset in arr.append(preset) }
+                    }
+                    self.commit {
+                        $0.loadedState!.previewFilterPresets = previews
+                    }
+                }
+            }
+            
+            loadedState.ifChanged(\.currentEdit.filters).do { currentEdit in
+                
+                self.debounceForCreatingCGImage.on { [weak self] in
+                    guard let self = self else { return }
+                    Task {
+                        let cgImageForCrop: CGImage = await {
+                            do {
+                                return try await EditingStack.renderCGImageForCrop(
+                                    filters: currentEdit.makeFilters(),
+                                    source: .init(cgImage: loadedState.editingSourceCGImage),
+                                    orientation: loadedState.metadata.orientation
+                                )
+                            } catch {
+                                assertionFailure()
+                                return loadedState.editingSourceCGImage
+                            }
+                        }()
+                        self.commit {
+                            $0.loadedState?.imageForCrop = cgImageForCrop
+                        }
+                    }
+                }
+            }
+        }
     }
-  }
-
-  public typealias Revision = Int
-
-  public var currentRevision: Revision? {
-    self.state.primitive.loadedState?.history.count
-  }
-
-  public func revert(to revision: Revision) {
-    commit {
-      $0.loadedState?.revert(to: revision)
+    
+    // MARK: - Functions
+    
+    /**
+     Adds a new snapshot as a history.
+     */
+    public func takeSnapshot() {
+        commit {
+            $0.loadedState?.makeVersion()
+        }
     }
-  }
-
-  /**
-   Reverts the current editing.
-   */
-  public func revertEdit() {
-    _pixelengine_ensureMainThread()
-
-    commit {
-      $0.loadedState?.revertCurrentEditing()
+    
+    public typealias Revision = Int
+    
+    public var currentRevision: Revision? {
+        self.state.primitive.loadedState?.history.count
     }
-  }
-
-  /**
-   Undo editing, pulling the latest history back into the current edit.
-   */
-  public func undoEdit() {
-    _pixelengine_ensureMainThread()
-
-    commit {
-      $0.loadedState?.undoEditing()
+    
+    public func revert(to revision: Revision) {
+        commit {
+            $0.loadedState?.revert(to: revision)
+        }
     }
-  }
-
-  /**
-   Purges the all of the history
-   */
-  public func removeAllEditsHistory() {
-    _pixelengine_ensureMainThread()
-
-    commit {
-      $0.loadedState?.history = []
+    
+    /**
+     Reverts the current editing.
+     */
+    public func revertEdit() {
+        _pixelengine_ensureMainThread()
+        
+        commit {
+            $0.loadedState?.revertCurrentEditing()
+        }
     }
-  }
-
-  public func set(filters: (inout Edit.Filters) -> Void) {
-    _pixelengine_ensureMainThread()
-
-    applyIfChanged {
-      filters(&$0.filters)
+    
+    /**
+     Undo editing, pulling the latest history back into the current edit.
+     */
+    public func undoEdit() {
+        _pixelengine_ensureMainThread()
+        
+        commit {
+            $0.loadedState?.undoEditing()
+        }
     }
-  }
-
-  public func crop(_ value: EditingCrop) {
-    applyIfChanged {
-      $0.crop = value
+    
+    
+    //     Purges the all of the history
+    /// Mutate the filters, then asynchronously refresh the preview image.
+    public func set(filters: (inout Edit.Filters) -> Void) async {
+        applyIfChanged {
+            filters(&$0.filters)
+        }
+        await refreshEditingPreviewImage()
     }
-  }
-
-  public func set(blurringMaskPaths: [DrawnPath]) {
-    _pixelengine_ensureMainThread()
-
-    applyIfChanged {
-      $0.drawings.blurredMaskPaths = blurringMaskPaths
+    
+    public func set(filters: (inout Edit.Filters) -> Void) {
+        applyIfChanged {
+            filters(&$0.filters)
+        }
+        Task { await self.refreshEditingPreviewImage() }
     }
-  }
-
-  public func append<C: Collection>(blurringMaskPaths: C) where C.Element == DrawnPath {
-    _pixelengine_ensureMainThread()
-
-    applyIfChanged {
-      $0.drawings.blurredMaskPaths += blurringMaskPaths
+    
+    public func crop(_ value: EditingCrop) {
+        applyIfChanged {
+            $0.crop = value
+        }
     }
-  }
-
-  public func makeRenderer() throws -> BrightRoomImageRenderer {
-    let stateSnapshot = state
-
-    guard let loaded = stateSnapshot.loadedState else {
-      throw EditingStackError.unableToCreateRendererInLoading
+    
+    public func set(blurringMaskPaths: [DrawnPath]) {
+        _pixelengine_ensureMainThread()
+        
+        applyIfChanged {
+            $0.drawings.blurredMaskPaths = blurringMaskPaths
+        }
     }
-
-    let imageSource = loaded.imageSource
-
-    let renderer = BrightRoomImageRenderer(
-      source: imageSource,
-      orientation: loaded.metadata.orientation
-    )
-
-    // TODO: Clean up ImageRenderer.Edit
-
-    let edit = loaded.currentEdit
-
-    renderer.edit.croppingRect = edit.crop
-
-    if edit.drawings.blurredMaskPaths.isEmpty == false {
-      renderer.edit.drawer = [
-        BlurredMask(paths: edit.drawings.blurredMaskPaths)
-      ]
+    
+    public func append<C: Collection>(blurringMaskPaths: C) where C.Element == DrawnPath {
+        _pixelengine_ensureMainThread()
+        
+        applyIfChanged {
+            $0.drawings.blurredMaskPaths += blurringMaskPaths
+        }
     }
-
-    renderer.edit.modifiers = edit.makeFilters()
-
-    return renderer
-  }
-
-  private func applyIfChanged(_ perform: (inout Edit) -> Void) {
-    commit {
-      guard $0.loadedState != nil else {
-        return
-      }
-      perform(&$0.loadedState!.currentEdit)
+    
+    public func makeRenderer() throws -> BrightRoomImageRenderer {
+        let stateSnapshot = state
+        
+        guard let loaded = stateSnapshot.loadedState else {
+            throw EditingStackError.unableToCreateRendererInLoading
+        }
+        
+        let imageSource = loaded.imageSource
+        
+        let renderer = BrightRoomImageRenderer(
+            source: imageSource,
+            orientation: loaded.metadata.orientation
+        )
+        
+        // TODO: Clean up ImageRenderer.Edit
+        
+        let edit = loaded.currentEdit
+        
+        renderer.edit.croppingRect = edit.crop
+        
+        if edit.drawings.blurredMaskPaths.isEmpty == false {
+            renderer.edit.drawer = [
+                BlurredMask(paths: edit.drawings.blurredMaskPaths)
+            ]
+        }
+        
+        renderer.edit.modifiers = edit.makeFilters()
+        
+        return renderer
     }
-  }
-
-  private func adjustCropExtent(
-    image: CIImage,
-    imageSize: CGSize,
-    completion: @escaping (EditingCrop) -> Void
-  ) {
-    let crop = EditingCrop(imageSize: imageSize)
-
-    let scaled = image.transformed(
-      by: .init(
-        scaleX: image.extent.width < imageSize.width ? imageSize.width / image.extent.width : 1,
-        y: image.extent.height < imageSize.width ? imageSize.height / image.extent.height : 1
-      )
-    )
-
-    let translated = scaled.transformed(
-      by: .init(
-        translationX: scaled.extent.origin.x,
-        y: scaled.extent.origin.y
-      )
-    )
-
-    let actualSizeFromDownsampledImage = translated
-
-    cropModifier.run(actualSizeFromDownsampledImage, editingCrop: crop, completion: completion)
-  }
-
-  private static func renderCGImageForCrop(
-    filters: [AnyFilter],
-    source: ImageSource,
-    orientation: CGImagePropertyOrientation
-  ) async throws -> CGImage {
-
-    let renderer = BrightRoomImageRenderer(source: source, orientation: orientation)
-    renderer.edit.modifiers = filters
-
-      let result = try await renderer.render().cgImage
-
-    return result
-  }
-
+    
+    private func applyIfChanged(_ perform: (inout Edit) -> Void) {
+        commit {
+            guard $0.loadedState != nil else {
+                return
+            }
+            perform(&$0.loadedState!.currentEdit)
+        }
+    }
+    
+    /// Adjust the crop extent. (moved to top-level of the class for scoping support)
+    private func adjustCropExtent(
+        image: CIImage,
+        imageSize: CGSize,
+        completion: @escaping (EditingCrop) -> Void
+    ) {
+        let crop = EditingCrop(imageSize: imageSize)
+        let scaled = image.transformed(
+            by: .init(
+                scaleX: image.extent.width < imageSize.width ? imageSize.width / image.extent.width : 1,
+                y: image.extent.height < imageSize.width ? imageSize.height / image.extent.height : 1
+            )
+        )
+        let translated = scaled.transformed(
+            by: .init(
+                translationX: scaled.extent.origin.x,
+                y: scaled.extent.origin.y
+            )
+        )
+        let actualSizeFromDownsampledImage = translated
+        cropModifier.run(actualSizeFromDownsampledImage, editingCrop: crop, completion: completion)
+    }
+    
+    private static func renderCGImageForCrop(
+        filters: [AnyFilter],
+        source: ImageSource,
+        orientation: CGImagePropertyOrientation
+    ) async throws -> CGImage {
+        let renderer = BrightRoomImageRenderer(source: source, orientation: orientation)
+        renderer.edit.modifiers = filters
+        let result = try await renderer.render().cgImage
+        return result
+    }
 }
 

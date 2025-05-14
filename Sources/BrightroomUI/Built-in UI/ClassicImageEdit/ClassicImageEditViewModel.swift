@@ -25,7 +25,8 @@ import Verge
 import BrightroomEngine
 #endif
 
-public final class ClassicImageEditViewModel: Equatable, StoreDriverType {
+@MainActor
+public final class ClassicImageEditViewModel: @preconcurrency Equatable, StoreDriverType {
   public static func == (lhs: ClassicImageEditViewModel, rhs: ClassicImageEditViewModel) -> Bool {
     lhs === rhs
   }

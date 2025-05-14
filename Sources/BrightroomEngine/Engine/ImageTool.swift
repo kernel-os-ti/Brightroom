@@ -249,7 +249,7 @@ public enum ImageTool {
 
     let destination = CGImageDestinationCreateWithData(
       data,
-      kUTTypeJPEG,
+      UTType.jpeg.identifier as CFString,
       1,
       [:] as CFDictionary
     )!
@@ -275,7 +275,7 @@ public enum ImageTool {
 
     let destination = CGImageDestinationCreateWithData(
       data,
-      kUTTypePNG,
+      UTType.png.identifier as CFString,
       1,
       [:] as CFDictionary
     )!

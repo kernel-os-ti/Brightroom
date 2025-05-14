@@ -396,8 +396,6 @@ private final class AspectRatioButton: UIButton {
     }
     
     backdropView.backgroundColor = .init(white: 1, alpha: 0.5)
-    
-    titleEdgeInsets = .init(top: -2, left: 6, bottom: -2, right: 6)
   }
   
   required init?(coder: NSCoder) {
@@ -416,8 +414,8 @@ private final class AspectRatioButton: UIButton {
   
   override var intrinsicContentSize: CGSize {
     let originalContentSize = super.intrinsicContentSize
-    let adjustedWidth = originalContentSize.width + titleEdgeInsets.left + titleEdgeInsets.right
-    let adjustedHeight = originalContentSize.height + titleEdgeInsets.top + titleEdgeInsets.bottom
+    let adjustedWidth = originalContentSize.width
+    let adjustedHeight = originalContentSize.height
     return CGSize(width: adjustedWidth, height: adjustedHeight)
   }
   

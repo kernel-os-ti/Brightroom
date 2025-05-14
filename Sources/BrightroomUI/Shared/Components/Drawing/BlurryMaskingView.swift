@@ -21,10 +21,13 @@
 
 import UIKit
 
+
 #if !COCOAPODS
 import BrightroomEngine
 #endif
 import Verge
+import Combine
+import Combine
 
 public final class BlurryMaskingView: PixelEditorCodeBasedView, UIScrollViewDelegate {
 
@@ -148,6 +151,15 @@ public final class BlurryMaskingView: PixelEditorCodeBasedView, UIScrollViewDele
       
       blurryImageView.mask = canvasView
       clipsToBounds = true
+
+      // Observe editingPreviewImage from editingStack (Combine)
+      editingStack.editingPreviewImagePublisher
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] (image: CIImage?) in
+          guard let self = self, let image = image else { return }
+          self.blurryImageView.display(image: BlurredMask.blur(image: image))
+        }
+        .store(in: &subscriptions)
     }
     
     drawingView.handlers = drawingView.handlers&>.modify {
@@ -234,17 +246,10 @@ public final class BlurryMaskingView: PixelEditorCodeBasedView, UIScrollViewDele
           guard let self = self else { return }        
           
           if let state = state.mapIfPresent(\.loadedState) {
-            
-            state.ifChanged(\.editingPreviewImage).do { image in
-              self.blurryImageView.display(image: BlurredMask.blur(image: image))
-            }
-            
             state.ifChanged(\.currentEdit.drawings.blurredMaskPaths).do { paths in
               self.canvasView.setResolvedDrawnPaths(paths)
             }
-            
           }
-       
         }
         .store(in: &subscriptions)
       }

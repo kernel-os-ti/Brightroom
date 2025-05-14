@@ -83,11 +83,7 @@ open class EditingStack: Hashable, StoreDriverType {
 
        - TODO: Should be marked as `fileprivate(set)`, but compile fails in CocoaPods installed.
        */
-      public var currentEdit: Edit {
-        didSet {
-          editingPreviewImage = currentEdit.filters.apply(to: editingSourceImage)
-        }
-      }
+      public var currentEdit: Edit
 
       /// Won't change from initial state
       public var imageSize: CGSize {
@@ -109,6 +105,13 @@ open class EditingStack: Hashable, StoreDriverType {
       public let editingSourceImage: CIImage
 
       public fileprivate(set) var editingPreviewImage: CIImage
+
+      /// Call this after updating currentEdit to refresh the preview using async filtering.
+      public mutating func refreshEditingPreviewImage() async {
+        let result = await currentEdit.filters.apply(to: editingSourceImage)
+        // Because the struct may be used from the main actor/UI, update directly
+        editingPreviewImage = result
+      }
 
       public fileprivate(set) var imageForCrop: CGImage
 
@@ -238,20 +241,18 @@ open class EditingStack: Hashable, StoreDriverType {
   ///   - modifyCrop: A chance to modify cropping. It runs in background-thread. CIImage is not original image.
   public init(
     imageProvider: ImageProvider,
-    colorCubeStorage: ColorCubeStorage = .default,
+    colorCubeStorage: PresetStorage = .default,
     presetStorage: PresetStorage = .default,
     options: Options = .init(),
     cropModifier: CropModifier = .init(modify: { _, c, completion in completion(c) })
   ) {
-
     self.options = options
     self.cropModifier = cropModifier
     store = .init(
       initialState: .init()
     )
-
     filterPresets =
-      colorCubeStorage.filters.map {
+      colorCubeStorage.presets.map {
         FilterPreset(
           name: $0.name,
           identifier: $0.identifier,
@@ -291,7 +292,7 @@ open class EditingStack: Hashable, StoreDriverType {
 
     store.sinkState(queue: .specific(backgroundQueue)) { [weak self] (state: Changes<State>) in
       guard let self = self else { return }
-      self.receiveInBackground(newState: state)
+      Task { await self.receiveInBackground(newState: state) }
     }
     .store(in: &subscriptions)
 
@@ -305,98 +306,78 @@ open class EditingStack: Hashable, StoreDriverType {
 
     imageProviderSubscription = imageProvider
       .sinkState(queue: .specific(backgroundQueue)) { [weak self] (state: Changes<ImageProvider.State>) in
-
-        /*
-         In Background thread
-         */
-
+        /* In Background thread */
         guard let self = self else { return }
-
         state.ifChanged(\.loadedImage).do { image in
-
-          guard let image = image else {
-            return
-          }
-
+          guard let image = image else { return }
           switch image {
-          case let .editable(image, metadata):
-
-            let thumbnailCGImage = image.loadThumbnailCGImage(maxPixelSize: 180)
-
-            /**
-             An image resised from original image
-             */
-            let editingSourceCGImage = image.loadThumbnailCGImage(
-              maxPixelSize: self.editingImageMaxPixelSize
-            )
-
-            assert(editingSourceCGImage.colorSpace != nil)
-
-            /// resized
-            let _editingSourceCIImage: CIImage = editingSourceCGImage._makeCIImage(
-              orientation: metadata.orientation,
-              device: self.mtlDevice,
-              usesMTLTexture: self.options.usesMTLTextureForEditingImage
-            )
-
-            let _thumbnailImage: CIImage = thumbnailCGImage._makeCIImage(
-              orientation: metadata.orientation,
-              device: self.mtlDevice,
-              usesMTLTexture: self.options.usesMTLTextureForEditingImage
-            )
-
-            let cgImageForCrop: CGImage = {
-              do {
-                return try Self.renderCGImageForCrop(
-                  filters: [],
-                  source: .init(cgImage: editingSourceCGImage),
-                  orientation: metadata.orientation
-                )
-              } catch {
-                EngineSanitizer.global.onDidFindRuntimeError(
-                  .failedToRenderCGImageForCrop(sourceImage: editingSourceCGImage)
-                )
-                assertionFailure()
-                return editingSourceCGImage
-              }
-            }()
-
-            self.adjustCropExtent(
-              image: _editingSourceCIImage,
-              imageSize: metadata.imageSize,
-              completion: { [weak self] crop in
-
-                guard let self = self else { return }
-
-                self.commit { (s: inout State) in
-                  assert(
-                    (_editingSourceCIImage.extent.width > _editingSourceCIImage.extent.height)
-                      == (metadata.imageSize.width > metadata.imageSize.height)
-                  )
-
-                  let initialEdit = Edit(crop: crop)
-
-                  s.loadedState = .init(
-                    imageSource: image,
-                    metadata: metadata,
-                    initialEditing: initialEdit,
-                    currentEdit: initialEdit,
-                    thumbnailCIImage: _thumbnailImage,
-                    editingSourceCGImage: editingSourceCGImage,
-                    editingSourceCIImage: _editingSourceCIImage,
-                    editingPreviewCIImage: initialEdit.filters.apply(to: _editingSourceCIImage),
-                    imageForCrop: cgImageForCrop
-                  )
-
-                  self.imageProviderSubscription?.cancel()
-
-                  DispatchQueue.main.async {
-                    onPreparationCompleted()
+            case let .editable(image, metadata):
+              let thumbnailCGImage = image.loadThumbnailCGImage(maxPixelSize: 180)
+              let editingSourceCGImage = image.loadThumbnailCGImage(
+                maxPixelSize: self.editingImageMaxPixelSize
+              )
+              assert(editingSourceCGImage.colorSpace != nil)
+              let _editingSourceCIImage: CIImage = editingSourceCGImage._makeCIImage(
+                orientation: metadata.orientation,
+                device: self.mtlDevice,
+                usesMTLTexture: self.options.usesMTLTextureForEditingImage
+              )
+              let _thumbnailImage: CIImage = thumbnailCGImage._makeCIImage(
+                orientation: metadata.orientation,
+                device: self.mtlDevice,
+                usesMTLTexture: self.options.usesMTLTextureForEditingImage
+              )
+              let cgImageForCrop: CGImage = editingSourceCGImage
+              self.adjustCropExtent(
+                image: _editingSourceCIImage,
+                imageSize: metadata.imageSize,
+                completion: { [weak self] crop in
+                  guard let self = self else { return }
+                  self.commit { (s: inout State) in
+                    assert(
+                      (_editingSourceCIImage.extent.width > _editingSourceCIImage.extent.height)
+                        == (metadata.imageSize.width > metadata.imageSize.height)
+                    )
+                    let initialEdit = Edit(crop: crop)
+                    s.loadedState = .init(
+                      imageSource: image,
+                      metadata: metadata,
+                      initialEditing: initialEdit,
+                      currentEdit: initialEdit,
+                      thumbnailCIImage: _thumbnailImage,
+                      editingSourceCGImage: editingSourceCGImage,
+                      editingSourceCIImage: _editingSourceCIImage,
+                      editingPreviewCIImage: _editingSourceCIImage,
+                      imageForCrop: cgImageForCrop
+                    )
+                    self.imageProviderSubscription?.cancel()
+                    DispatchQueue.main.async {
+                      onPreparationCompleted()
+                    }
+                  }
+                  // After state is initialized, do the real async crop render in background:
+                  Task {
+                      let cgImageForCrop: CGImage = await {
+                      do {
+                        return try await EditingStack.renderCGImageForCrop(
+                          filters: [],
+                          source: .init(cgImage: editingSourceCGImage),
+                          orientation: metadata.orientation
+                        )
+                      } catch {
+                        EngineSanitizer.global.onDidFindRuntimeError(
+                          .failedToRenderCGImageForCrop(sourceImage: editingSourceCGImage)
+                        )
+                        assertionFailure()
+                        return editingSourceCGImage
+                      }
+                    }()
+                    self.commit {
+                      $0.loadedState?.imageForCrop = cgImageForCrop
+                    }
                   }
                 }
-              }
-            )
-
+              )
           }
         }
       }
@@ -443,50 +424,53 @@ open class EditingStack: Hashable, StoreDriverType {
     EngineLog.debug("[EditingStack] deinit")
   }
 
-  private func receiveInBackground(newState state: Changes<State>) {
+    private func receiveInBackground(newState state: Changes<State>) async {
 
-    assert(Thread.isMainThread == false)
+           assert(Thread.isMainThread == false)
 
-    if let loadedState = state.mapIfPresent(\.loadedState) {
+           if let loadedState = state.mapIfPresent(\.loadedState) {
 
-      loadedState.ifChanged(\.thumbnailImage).do { image in
+             loadedState.ifChanged(\.thumbnailImage).do { image in
+               Task { [self] in
+                 let previews = await withTaskGroup(of: PreviewFilterPreset.self) { group in
+                   for filter in self.filterPresets {
+                     group.addTask {
+                       await PreviewFilterPreset(sourceImage: image, filter: filter)
+                     }
+                   }
+                   return await group.reduce(into: [PreviewFilterPreset]()) { arr, preset in arr.append(preset) }
+                 }
+                 self.commit {
+                   $0.loadedState!.previewFilterPresets = previews
+                 }
+               }
+             }
 
-        commit {
-          $0.loadedState!.previewFilterPresets = self.filterPresets.map {
-            PreviewFilterPreset(sourceImage: image, filter: $0)
-          }
-        }
-      }
+             loadedState.ifChanged(\.currentEdit.filters).do { currentEdit in
 
-      loadedState.ifChanged(\.currentEdit.filters).do { currentEdit in
-
-        self.debounceForCreatingCGImage.on { [weak self] in
-
-          guard let self = self else { return }
-
-          let cgImageForCrop: CGImage = {
-            do {
-              return try Self.renderCGImageForCrop(
-                filters: currentEdit.makeFilters(),
-                source: .init(cgImage: loadedState.editingSourceCGImage),
-                orientation: loadedState.metadata.orientation
-              )
-            } catch {
-              assertionFailure()
-              return loadedState.editingSourceCGImage
-            }
-          }()
-
-          self.commit {
-            $0.loadedState?.imageForCrop = cgImageForCrop
-          }
-
-        }
-
-      }
-
-    }
-  }
+               self.debounceForCreatingCGImage.on { [weak self] in
+                 guard let self = self else { return }
+                 Task {
+                     let cgImageForCrop: CGImage = await {
+                     do {
+                       return try await EditingStack.renderCGImageForCrop(
+                         filters: currentEdit.makeFilters(),
+                         source: .init(cgImage: loadedState.editingSourceCGImage),
+                         orientation: loadedState.metadata.orientation
+                       )
+                     } catch {
+                       assertionFailure()
+                       return loadedState.editingSourceCGImage
+                     }
+                   }()
+                   self.commit {
+                     $0.loadedState?.imageForCrop = cgImageForCrop
+                   }
+                 }
+               }
+             }
+           }
+       }
 
   // MARK: - Functions
 
@@ -644,12 +628,12 @@ open class EditingStack: Hashable, StoreDriverType {
     filters: [AnyFilter],
     source: ImageSource,
     orientation: CGImagePropertyOrientation
-  ) throws -> CGImage {
+  ) async throws -> CGImage {
 
     let renderer = BrightRoomImageRenderer(source: source, orientation: orientation)
     renderer.edit.modifiers = filters
 
-    let result = try renderer.render().cgImage
+      let result = try await renderer.render().cgImage
 
     return result
   }

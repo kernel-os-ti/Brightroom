@@ -44,12 +44,12 @@ public struct FilterPreset: Filtering {
     self.userInfo = userInfo
   }
 
-  public func apply(to image: CIImage, sourceImage: CIImage) -> CIImage {
-
-    filters.reduce(image) { (image, filter) -> CIImage in
-      filter.apply(to: image, sourceImage: sourceImage)
+  public func apply(to image: CIImage, sourceImage: CIImage) async -> CIImage {
+    var current = image
+    for filter in filters {
+        current = await filter.apply(to: current, sourceImage: sourceImage)
     }
-
+    return current
   }
 }
 
@@ -63,9 +63,9 @@ public struct PreviewFilterPreset: Hashable {
   
   public let filter: FilterPreset
 
-  init(sourceImage: CIImage, filter: FilterPreset) {
+  init(sourceImage: CIImage, filter: FilterPreset) async {
     self.filter = filter
-    self.image = filter.apply(to: sourceImage, sourceImage: sourceImage)
+    self.image = await filter.apply(to: sourceImage, sourceImage: sourceImage)
   }
 
 }

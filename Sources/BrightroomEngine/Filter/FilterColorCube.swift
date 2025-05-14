@@ -27,9 +27,9 @@ public struct PreviewFilterColorCube : Equatable {
   public let image: CIImage
   public let filter: FilterColorCube
 
-  init(sourceImage: CIImage, filter: FilterColorCube) {
+  init(sourceImage: CIImage, filter: FilterColorCube) async {
     self.filter = filter
-    self.image = filter.apply(to: sourceImage, sourceImage: sourceImage)
+    self.image = await filter.apply(to: sourceImage, sourceImage: sourceImage)
   }
 
 }
@@ -64,7 +64,7 @@ public struct FilterColorCube : Filtering {
     identifier.hash(into: &hasher)
   }
 
-  public func apply(to image: CIImage, sourceImage: CIImage) -> CIImage {
+  public func apply(to image: CIImage, sourceImage: CIImage) async -> CIImage {
             
     #if false
             
@@ -82,9 +82,7 @@ public struct FilterColorCube : Filtering {
       dimension: dimension,
       cacheKey: identifier
     )
-          
     f.setValue(image, forKeyPath: kCIInputImageKey)
-        
     let background = image
     let foreground = f.outputImage!.applyingFilter(
       "CIColorMatrix", parameters: [
@@ -94,16 +92,13 @@ public struct FilterColorCube : Filtering {
         "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(amount)),
         "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0),
       ])
-    
     let composition = CIFilter(
       name: "CISourceOverCompositing",
       parameters: [
         kCIInputImageKey : foreground,
         kCIInputBackgroundImageKey : background
       ])!
-    
     return composition.outputImage!
-    
     #endif
   }
 }

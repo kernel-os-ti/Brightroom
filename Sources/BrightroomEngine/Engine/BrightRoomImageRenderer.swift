@@ -29,7 +29,7 @@ public typealias ImageRenderer = BrightRoomImageRenderer
 /// It renders an image with options
 public final class BrightRoomImageRenderer {
 
-  public struct Options {
+    public struct Options: Sendable {
 
     public var resolution: Resolution
     public var workingFormat: CIFormat
@@ -59,9 +59,9 @@ public final class BrightRoomImageRenderer {
   /**
    A result of rendering.
    */
-  public struct Rendered {
+    public struct Rendered : Sendable{
 
-    public enum Engine {
+        public enum Engine : Sendable{
       case coreGraphics
       case combined
     }
@@ -116,7 +116,7 @@ public final class BrightRoomImageRenderer {
 
   private static let queue = DispatchQueue.init(label: "app.muukii.Pixel.renderer")
 
-  public enum Resolution {
+    public enum Resolution : Sendable{
     case full
     case resize(maxPixelSize: CGFloat)
   }
@@ -152,14 +152,16 @@ public final class BrightRoomImageRenderer {
     ) -> Void
   ) {
     type(of: self).queue.async {
-      do {
-        let rendered = try self.render(options: options)
-        callbackQueue.async {
-          completion(.success(rendered))
-        }
-      } catch {
-        callbackQueue.async {
-          completion(.failure(error))
+      Task {
+        do {
+          let rendered = try await self.render(options: options)
+          callbackQueue.async {
+            completion(.success(rendered))
+          }
+        } catch {
+          callbackQueue.async {
+            completion(.failure(error))
+          }
         }
       }
     }
@@ -170,11 +172,11 @@ public final class BrightRoomImageRenderer {
 
    - Attension: This operation can be run background-thread.
    */
-  public func render(options: Options = .init()) throws -> Rendered {
+    public func render(options: Options = .init()) async throws -> Rendered {
     if edit.drawer.isEmpty, edit.modifiers.isEmpty, options.workingColorSpace == nil {
       return try renderOnlyCropping(options: options)
     } else {
-      return try renderRevison2(options: options)
+        return try await renderRevison2(options: options)
     }
   }
 
@@ -244,10 +246,10 @@ public final class BrightRoomImageRenderer {
   /**
    Render for full features using CoreImage and CoreGraphics
    */
-  private func renderRevison2(
+private func renderRevison2(
     options: Options = .init(),
     debug: @escaping (CIImage) -> Void = { _ in }
-  ) throws -> Rendered {
+) async throws -> Rendered {
 
     let ciContext = CIContext(
       options: [
@@ -287,8 +289,9 @@ public final class BrightRoomImageRenderer {
      */
     EngineLog.debug(.renderer, "Applies Effect")
 
-    let effected_CIImage = edit.modifiers.reduce(sourceCIImage) { image, modifier in
-      modifier.apply(to: image, sourceImage: sourceCIImage)
+    var effected_CIImage = sourceCIImage
+    for modifier in edit.modifiers {
+      effected_CIImage = await modifier.apply(to: effected_CIImage, sourceImage: sourceCIImage)
     }
 
     /**

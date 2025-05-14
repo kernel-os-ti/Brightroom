@@ -34,7 +34,7 @@ public struct FilterFade : Filtering, Equatable, Codable {
     
   }
   
-  public func apply(to image: CIImage, sourceImage: CIImage) -> CIImage {
+public func apply(to image: CIImage, sourceImage: CIImage) async -> CIImage {
     
     let background = image
     let foreground = CIFilter(

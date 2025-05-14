@@ -81,7 +81,7 @@ public final class ImagePreviewView: PixelEditorCodeBasedView {
       setLoadingOverlay(factory: {
         LoadingBlurryOverlayView(
           effect: UIBlurEffect(style: .dark),
-          activityIndicatorStyle: .whiteLarge
+          activityIndicatorStyle: .large
         )
       })
     }
@@ -142,7 +142,14 @@ public final class ImagePreviewView: PixelEditorCodeBasedView {
       cachedCroppedImage = (state, croppedImage)
     }
     imageView.display(image: croppedImage)
-    imageView.postProcessing = state.currentEdit.filters.apply
+    // Asynchronous post-processing, update imageView yourself when ready
+    Task { [state] in
+      let processed = await state.currentEdit.filters.apply(to: croppedImage)
+      await MainActor.run {
+        imageView.display(image: processed)
+      }
+    }
+    // Optionally reset or update original imageView as before:
     originalImageView.display(image: croppedImage)
 
   }

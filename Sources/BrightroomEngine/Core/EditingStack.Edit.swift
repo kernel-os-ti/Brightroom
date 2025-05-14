@@ -100,10 +100,12 @@ extension EditingStack {
         .compactMap { $0 }
       }
       
-      public func apply(to ciImage: CIImage) -> CIImage {
-        makeFilters().reduce(ciImage) { (image, filter) -> CIImage in
-          filter.apply(to: image, sourceImage: image)
+      public func apply(to ciImage: CIImage) async -> CIImage {
+        var current = ciImage
+        for filter in makeFilters() {
+          current = await filter.apply(to: current, sourceImage: current)
         }
+        return current
       }
     }
   }

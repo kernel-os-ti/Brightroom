@@ -33,8 +33,8 @@ enum RadiusCalculator {
 }
 
 public protocol Filtering: Hashable {
-
-  func apply(to image: CIImage, sourceImage: CIImage) -> CIImage
+  /// Asynchronously apply the filter to the image.
+  func apply(to image: CIImage, sourceImage: CIImage) async -> CIImage
 }
 
 extension Filtering {
@@ -44,7 +44,6 @@ extension Filtering {
 }
 
 public struct AnyFilter: Filtering {
-  
   public static func == (lhs: AnyFilter, rhs: AnyFilter) -> Bool {
     lhs.base == rhs.base
   }
@@ -53,15 +52,18 @@ public struct AnyFilter: Filtering {
     base.hash(into: &hasher)
   }
 
-  private let applier: (CIImage, CIImage) -> CIImage
+  // Store async function pointer for apply
+  private let applier: (CIImage, CIImage) async -> CIImage
   public let base: AnyHashable
 
   public init<Filter: Filtering>(filter: Filter) {
     self.base = filter
-    self.applier = filter.apply
+    self.applier = { image, sourceImage in
+      await filter.apply(to: image, sourceImage: sourceImage)
+    }
   }
 
-  public func apply(to image: CIImage, sourceImage: CIImage) -> CIImage {
-    applier(image, sourceImage)
+  public func apply(to image: CIImage, sourceImage: CIImage) async -> CIImage {
+    await applier(image, sourceImage)
   }
 }

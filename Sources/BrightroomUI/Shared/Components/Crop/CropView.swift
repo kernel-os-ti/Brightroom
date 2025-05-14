@@ -473,9 +473,9 @@ public final class CropView: UIView, UIScrollViewDelegate {
 
    - Attension: This operation can be run background-thread.
    */
-  public func renderImage() throws -> BrightRoomImageRenderer.Rendered? {
+    public func renderImage() async throws -> BrightRoomImageRenderer.Rendered? {
     applyEditingStack()
-    return try editingStack.makeRenderer().render()
+        return try await editingStack.makeRenderer().render()
   }
 
   /**
